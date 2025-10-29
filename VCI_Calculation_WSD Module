@@ -1,0 +1,193 @@
+// This script is for gee and it helps to calcualte and map VCI for your study area.It is doing mapping using MODIS NDVI and VCI (2004-2024)
+
+// -------------------- STEP 1 --------------------
+// Import your Region of Interest (ROI)
+// 1. Upload your shapefile to Google Earth Engine (GEE) as an asset.
+// 2. Import it here and assign it to the variable 'roi'.
+// 3. The ROI is the area where all analysis will take place.
+var roi = ee.FeatureCollection("users/yourusername/roi");
+
+// Visualize the ROI on the map
+// This helps students check that the correct area is loaded.
+Map.centerObject(roi);
+Map.addLayer(roi, {color: 'blue'}, 'ROI');
+
+
+//STEP 2
+// Import the NDVI dataset
+// 1. VCI requires NDVI values, so we use MODIS MOD13A2 NDVI dataset.
+// 2. Select only the 'NDVI' band from the collection.
+// 3. Filter the images to only include the ROI.
+// 4. Scale the NDVI values by 0.0001 because MODIS NDVI is multiplied by 10000.
+// 5. Copy the original image properties like 'system:time_start' for future use.
+
+var allNDVI = ee.ImageCollection("MODIS/061/MOD13A2")
+  .select('NDVI')                 
+  .filterBounds(roi)              
+  .map(function(img){ 
+    return img.multiply(0.0001)   
+              .copyProperties(img, ['system:time_start']); 
+  });
+
+// STEP 3 
+// Compute NDVI minimum and maximum
+// 1. We need NDVI min and max values to calculate VCI.
+// 2. VCI formula: ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
+// 3. Compute the minimum NDVI across all years and the maximum NDVI.
+var ndviMin = allNDVI.min();
+var ndviMax = allNDVI.max();
+
+//  STEP 4 
+// Define the analysis period
+// 1. Decide which years you want to analyze, in this code I am doing (2000–2024).
+// 2. Store the years as a list for looping later.
+var years = ee.List.sequence(2000, 2024);
+
+
+// STEP 5
+// Create a function to compute yearly VCI and drought maps
+// 1. This function takes a year as input.
+// 2. It calculates the VCI for March–June of that year.
+// 3. It computes the median VCI for the ROI.
+// 4. It classifies drought severity into 5 classes.
+// 5. It adds the drought map to the map viewer.
+// 6. It exports the drought map to Google Drive.
+var makeVCI = function(year){
+
+  // ---- STEP 6a: Filter NDVI images for the target year ----
+  var start = ee.Date.fromYMD(year, 3, 1);   // Start of growing season
+  var end = ee.Date.fromYMD(year, 6, 30);    // End of growing season
+  var ndviYear = allNDVI.filterDate(start, end);
+
+  // ---- STEP 6b: Compute VCI for each image ----
+  // Formula: ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
+  var vci = ndviYear.map(function(img){
+    return img.expression(
+      '((ndvi - min) / (max - min)) * 100', {
+        'ndvi': img,
+        'min': ndviMin,
+        'max': ndviMax
+      }).rename('VCI')
+        .copyProperties(img, ['system:time_start']);
+  });
+
+  // ---- STEP 6c: Compute median VCI for the year ----
+  var vciMedian = vci.median();
+
+  // ---- STEP 6d: Classify drought severity ----
+  // 1 = Extreme (0–10)
+  // 2 = Severe (10–20)
+  // 3 = Moderate (20–30)
+  // 4 = Light (30–40)
+  // 5 = No drought (40+)
+  var droughtClass = ee.Image(0)
+    .where(vciMedian.gte(0).and(vciMedian.lt(10)), 1)
+    .where(vciMedian.gte(10).and(vciMedian.lt(20)), 2)
+    .where(vciMedian.gte(20).and(vciMedian.lt(30)), 3)
+    .where(vciMedian.gte(30).and(vciMedian.lt(40)), 4)
+    .where(vciMedian.gte(40), 5)
+    .clip(roi)
+    .rename('VCI');
+
+  // ---- STEP 6e: Compute median VCI value for the ROI ----
+  var stats = vciMedian.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  print('Year:', year, 'Median VCI:', stats.get('VCI'));
+
+  // ---- STEP 6f: Add drought map to map viewer ----
+  Map.addLayer(droughtClass, {min:1, max:6, palette: palette}, 'VCI ' + year);
+
+  // ---- STEP 6g: Export drought map to Google Drive ----
+  Export.image.toDrive({
+    image: droughtClass,
+    description: 'VCI_' + year,
+    folder: 'VCI_Maps',
+    region: roi,
+    scale: 1000,
+    crs: 'EPSG:4326',
+    maxPixels: 1e13
+  });
+
+  return droughtClass.set('year', year);
+};
+
+
+// -------------------- STEP 7 --------------------
+// Loop through all years and generate drought maps
+// -------------------------------------------------
+// 1. Calls the makeVCI() function for each year in the list.
+years.getInfo().forEach(function(year){
+  makeVCI(year);
+});
+
+
+// -------------------- STEP 8 --------------------
+// Function to compute yearly median VCI statistics
+// -------------------------------------------------
+// 1. Calculates the mean VCI of the ROI for each year.
+// 2. Returns a dictionary that can be exported as a table.
+var makeVCIStats = function(year){
+
+  var start = ee.Date.fromYMD(year, 3, 1);
+  var end = ee.Date.fromYMD(year, 6, 30);
+  var ndviYear = allNDVI.filterDate(start, end);
+
+  var vci = ndviYear.map(function(img){
+    return img.expression(
+      '((ndvi - min) / (max - min)) * 100', {
+        'ndvi': img,
+        'min': ndviMin,
+        'max': ndviMax
+      }).rename('VCI')
+        .copyProperties(img, ['system:time_start']);
+  });
+
+  var vciMedian = vci.median();
+
+  var medianVCI = ee.Number(vciMedian.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('VCI')).format('%.2f');
+
+  return ee.Dictionary({
+    'Year': year,
+    'Median_VCI': medianVCI
+  });
+};
+
+
+// -------------------- STEP 9 --------------------
+// Collect yearly median VCI statistics
+// -------------------------------------------------
+// 1. Loops over all years and applies makeVCIStats().
+// 2. Removes any null values.
+var statsList = ee.List(years.map(function(year){
+  return makeVCIStats(year);
+})).map(function(d){
+  return ee.Algorithms.If(d, d, null);
+}).removeAll([null]);
+
+// Convert list of dictionaries to FeatureCollection for table export
+var statsFC = ee.FeatureCollection(
+  statsList.map(function(d){
+    return ee.Feature(null, ee.Dictionary(d));
+  })
+);
+
+
+// -------------------- STEP 10 --------------------
+// Export the yearly VCI statistics as CSV
+// -------------------------------------------------
+// 1. Exports the table to Google Drive.
+// 2. The CSV file contains Year and Median_VCI columns.
+Export.table.toDrive({
+  collection: statsFC,
+  description: 'Historical_VCI_Table',
+  fileFormat: 'CSV'
+});
