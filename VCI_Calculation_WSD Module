@@ -1,66 +1,82 @@
-// This script is for gee and it helps to calcualte and map VCI for your study area.It is doing mapping using MODIS NDVI and VCI (2004-2024)
+// This script is for gee and it helps to calcualte and map VCI for your study area.It is mapping drougt using MODIS NDVI and VCI (2000-2024). Modis has datasets only from 2000 so if you wanna do analysis before 2000 you have to use other products like Landsat.
 
-// -------------------- STEP 1 --------------------
-// Import your Region of Interest (ROI)
-// 1. Upload your shapefile to Google Earth Engine (GEE) as an asset.
-// 2. Import it here and assign it to the variable 'roi'.
-// 3. The ROI is the area where all analysis will take place.
+
+// -------------------- STEP 1: Import ROI (Region of Interest) --------------------
+// ROI = Region of Interest is the area where you want to analyze vegetation
+// 1. Students should upload a shapefile (polygon) of their study area to GEE assets.
+// 2. Replace "users/yourusername/roi" with your own asset path.
 var roi = ee.FeatureCollection("users/yourusername/roi");
 
-// Visualize the ROI on the map
-// This helps students check that the correct area is loaded.
-Map.centerObject(roi);
-Map.addLayer(roi, {color: 'blue'}, 'ROI');
+// Why this is important:
+// The analysis will only consider this area. All NDVI calculations,
+// VCI maps, and drought classifications will be limited to this region.
+
+// Visualize ROI to confirm correct area is loaded
+Map.centerObject(roi); // Center the map on ROI
+Map.addLayer(roi, {color: 'blue'}, 'ROI'); // Draw ROI in blue
 
 
-//STEP 2
-// Import the NDVI dataset
-// 1. VCI requires NDVI values, so we use MODIS MOD13A2 NDVI dataset.
-// 2. Select only the 'NDVI' band from the collection.
-// 3. Filter the images to only include the ROI.
-// 4. Scale the NDVI values by 0.0001 because MODIS NDVI is multiplied by 10000.
-// 5. Copy the original image properties like 'system:time_start' for future use.
-
-var allNDVI = ee.ImageCollection("MODIS/061/MOD13A2")
-  .select('NDVI')                 
-  .filterBounds(roi)              
-  .map(function(img){ 
-    return img.multiply(0.0001)   
-              .copyProperties(img, ['system:time_start']); 
-  });
-
-// STEP 3 
-// Compute NDVI minimum and maximum
-// 1. We need NDVI min and max values to calculate VCI.
-// 2. VCI formula: ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
-// 3. Compute the minimum NDVI across all years and the maximum NDVI.
-var ndviMin = allNDVI.min();
-var ndviMax = allNDVI.max();
-
-//  STEP 4 
-// Define the analysis period
-// 1. Decide which years you want to analyze, in this code I am doing (2000–2024).
-// 2. Store the years as a list for looping later.
+// -------------------- STEP 2: Define years and color palette --------------------
+// Analysis period: 2000 to 2024
+// This list will be used to loop over each year and compute VCI
 var years = ee.List.sequence(2000, 2024);
 
+// Color palette for drought classification
+// Each number corresponds to drought severity
+// 1 = Extreme drought (black), 2 = Severe (red), 3 = Moderate (orange)
+// 4 = Light drought (yellow), 5 = No drought (green)
+var palette = ['black','red','orange','yellow','darkgreen'];
 
-// STEP 5
-// Create a function to compute yearly VCI and drought maps
-// 1. This function takes a year as input.
-// 2. It calculates the VCI for March–June of that year.
-// 3. It computes the median VCI for the ROI.
-// 4. It classifies drought severity into 5 classes.
-// 5. It adds the drought map to the map viewer.
-// 6. It exports the drought map to Google Drive.
+
+// -------------------- STEP 3: Load MODIS NDVI images --------------------
+// NDVI = Normalized Difference Vegetation Index, measures vegetation health
+// Steps:
+// 1. Load MODIS MOD13A2 (16-day interval)
+// 2. Select only NDVI band
+// 3. Filter images to ROI
+// 4. Scale NDVI from 0-10000 to 0-1 by multiplying by 0.0001
+// 5. Keep date property for later
+var allNDVI = ee.ImageCollection("MODIS/061/MOD13A2")
+  .select('NDVI')
+  .filterBounds(roi)
+  .map(function(img){ 
+    return img.multiply(0.0001) // scale NDVI to 0-1
+              .copyProperties(img, ['system:time_start']); // keep date
+  });
+
+// Why this is important:
+// NDVI is the raw data from which we calculate VCI. Scaling ensures
+// correct values between 0 and 1. Copying date allows us to track time.
+
+
+// -------------------- STEP 4: Compute NDVI min and max --------------------
+// VCI formula: ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
+// This step finds the smallest and largest NDVI values in the entire period
+var ndviMin = allNDVI.min(); // smallest NDVI over all years
+var ndviMax = allNDVI.max(); // largest NDVI over all years
+
+// Why this is important:
+// VCI is a relative measure of vegetation health across the time series, it says how much change isin in the present compared to historical average. NDVI_min and NDVI_max
+// allow us to compare vegetation condition across years and regions.
+
+
+// -------------------- STEP 5: Function to compute yearly VCI and drought map --------------------
+// This function calculates VCI for a given year and generates a drought map
 var makeVCI = function(year){
 
-  // ---- STEP 6a: Filter NDVI images for the target year ----
-  var start = ee.Date.fromYMD(year, 3, 1);   // Start of growing season
-  var end = ee.Date.fromYMD(year, 6, 30);    // End of growing season
+  // Step 5a: Filter NDVI images for the year
+  // Only March 1 – June 30 (typical growing season), you can do annual also
+// as Bilal in the lecture showed the context of Austria where in one seasonal it was totally barren and other season very green
+//See how seasonality is affecting your basin and choose the time duration.
+  var start = ee.Date.fromYMD(year, 3, 1);
+  var end = ee.Date.fromYMD(year, 6, 30);
   var ndviYear = allNDVI.filterDate(start, end);
 
-  // ---- STEP 6b: Compute VCI for each image ----
-  // Formula: ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
+  // Why this is important:
+  // We focus on the growing season because vegetation condition is
+  // most meaningful during this period.
+
+  // Step 5b: Compute VCI for each NDVI image
   var vci = ndviYear.map(function(img){
     return img.expression(
       '((ndvi - min) / (max - min)) * 100', {
@@ -68,28 +84,24 @@ var makeVCI = function(year){
         'min': ndviMin,
         'max': ndviMax
       }).rename('VCI')
-        .copyProperties(img, ['system:time_start']);
+        .copyProperties(img, ['system:time_start']); // retain date
   });
 
-  // ---- STEP 6c: Compute median VCI for the year ----
+  // Step 5c: Compute median VCI for the year
   var vciMedian = vci.median();
+  // Why median? Reduces effects of clouds or outliers
 
-  // ---- STEP 6d: Classify drought severity ----
-  // 1 = Extreme (0–10)
-  // 2 = Severe (10–20)
-  // 3 = Moderate (20–30)
-  // 4 = Light (30–40)
-  // 5 = No drought (40+)
+  // Step 5d: Classify drought severity
   var droughtClass = ee.Image(0)
-    .where(vciMedian.gte(0).and(vciMedian.lt(10)), 1)
-    .where(vciMedian.gte(10).and(vciMedian.lt(20)), 2)
-    .where(vciMedian.gte(20).and(vciMedian.lt(30)), 3)
-    .where(vciMedian.gte(30).and(vciMedian.lt(40)), 4)
-    .where(vciMedian.gte(40), 5)
+    .where(vciMedian.gte(0).and(vciMedian.lt(10)), 1)   // Extreme
+    .where(vciMedian.gte(10).and(vciMedian.lt(20)), 2)  // Severe
+    .where(vciMedian.gte(20).and(vciMedian.lt(30)), 3)  // Moderate
+    .where(vciMedian.gte(30).and(vciMedian.lt(40)), 4)  // Light
+    .where(vciMedian.gte(40), 5)                        // No drought
     .clip(roi)
     .rename('VCI');
 
-  // ---- STEP 6e: Compute median VCI value for the ROI ----
+  // Step 5e: Compute median VCI for ROI
   var stats = vciMedian.reduceRegion({
     reducer: ee.Reducer.mean(),
     geometry: roi,
@@ -97,11 +109,12 @@ var makeVCI = function(year){
     maxPixels: 1e13
   });
   print('Year:', year, 'Median VCI:', stats.get('VCI'));
+  // Why print? Students can see the vegetation condition numerically
 
-  // ---- STEP 6f: Add drought map to map viewer ----
+  // Step 5f: Add drought map to map viewer
   Map.addLayer(droughtClass, {min:1, max:6, palette: palette}, 'VCI ' + year);
 
-  // ---- STEP 6g: Export drought map to Google Drive ----
+  // Step 5g: Export drought map to Google Drive
   Export.image.toDrive({
     image: droughtClass,
     description: 'VCI_' + year,
@@ -112,30 +125,30 @@ var makeVCI = function(year){
     maxPixels: 1e13
   });
 
+  // Return the drought image with year property for reference
   return droughtClass.set('year', year);
 };
 
 
-// -------------------- STEP 7 --------------------
-// Loop through all years and generate drought maps
-// -------------------------------------------------
-// 1. Calls the makeVCI() function for each year in the list.
+// -------------------- STEP 6: Loop over years --------------------
+// Apply the makeVCI function for each year in the list
+// Generates maps and exports them automatically
 years.getInfo().forEach(function(year){
   makeVCI(year);
 });
 
 
-// -------------------- STEP 8 --------------------
-// Function to compute yearly median VCI statistics
-// -------------------------------------------------
-// 1. Calculates the mean VCI of the ROI for each year.
-// 2. Returns a dictionary that can be exported as a table.
+// -------------------- STEP 7: Function to compute yearly median VCI statistics --------------------
+// This calculates the average VCI for the ROI per year
+// Useful for creating a table of vegetation condition trends
 var makeVCIStats = function(year){
 
+  // Filter NDVI images for the growing season
   var start = ee.Date.fromYMD(year, 3, 1);
   var end = ee.Date.fromYMD(year, 6, 30);
   var ndviYear = allNDVI.filterDate(start, end);
 
+  // Compute VCI for the year
   var vci = ndviYear.map(function(img){
     return img.expression(
       '((ndvi - min) / (max - min)) * 100', {
@@ -146,8 +159,10 @@ var makeVCIStats = function(year){
         .copyProperties(img, ['system:time_start']);
   });
 
+  // Median VCI
   var vciMedian = vci.median();
 
+  // Compute mean VCI for ROI
   var medianVCI = ee.Number(vciMedian.reduceRegion({
     reducer: ee.Reducer.mean(),
     geometry: roi,
@@ -155,6 +170,7 @@ var makeVCIStats = function(year){
     maxPixels: 1e13
   }).get('VCI')).format('%.2f');
 
+  // Return as dictionary for table
   return ee.Dictionary({
     'Year': year,
     'Median_VCI': medianVCI
@@ -162,18 +178,14 @@ var makeVCIStats = function(year){
 };
 
 
-// -------------------- STEP 9 --------------------
-// Collect yearly median VCI statistics
-// -------------------------------------------------
-// 1. Loops over all years and applies makeVCIStats().
-// 2. Removes any null values.
+// -------------------- STEP 8: Collect stats for all years --------------------
 var statsList = ee.List(years.map(function(year){
   return makeVCIStats(year);
 })).map(function(d){
-  return ee.Algorithms.If(d, d, null);
+  return ee.Algorithms.If(d, d, null); // remove null values
 }).removeAll([null]);
 
-// Convert list of dictionaries to FeatureCollection for table export
+// Convert list to FeatureCollection for CSV export
 var statsFC = ee.FeatureCollection(
   statsList.map(function(d){
     return ee.Feature(null, ee.Dictionary(d));
@@ -181,13 +193,18 @@ var statsFC = ee.FeatureCollection(
 );
 
 
-// -------------------- STEP 10 --------------------
-// Export the yearly VCI statistics as CSV
-// -------------------------------------------------
-// 1. Exports the table to Google Drive.
-// 2. The CSV file contains Year and Median_VCI columns.
+// -------------------- STEP 9: Export table to CSV --------------------
+// Exports the median VCI per year table to Google Drive
 Export.table.toDrive({
   collection: statsFC,
   description: 'Historical_VCI_Table',
   fileFormat: 'CSV'
 });
+
+// ============================================================
+// End of Script
+// Students can now:
+// - See the ROI and drought maps for each year
+// - Check median VCI values printed in the console
+// - Export maps and tables to Google Drive for further analysis
+
