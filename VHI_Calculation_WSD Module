@@ -1,0 +1,185 @@
+// Alright, we are going to calculate the Vegetation Health Index (VHI)
+// VHI combines VCI (vegetation condition) and TCI (temperature stress)
+// We'll use MODIS data from 2000 to 2024 for this
+
+// First, let's define our study area
+// Students need to upload their shapefile to GEE assets and replace the path below
+var roi = ee.FeatureCollection("users/yourusername/roi");
+
+// Let's zoom to our area so we know it's loaded correctly
+Map.centerObject(roi);
+Map.addLayer(roi, {color: 'blue'}, 'ROI');
+
+// We want to do this for every year from 2000 to 2024
+var years = ee.List.sequence(2000, 2024);
+
+// We'll also define some colors for the VHI maps
+// 1 = Extremely stressed, 5 = Healthy
+var palette = ['black','red','orange','yellow','darkgreen'];
+
+// Now let's get the NDVI data, which tells us how green the vegetation is
+// MOD13A2 is a 16-day NDVI product
+var allNDVI = ee.ImageCollection("MODIS/061/MOD13A2")
+  .select('NDVI')
+  .filterBounds(roi)
+  .map(function(img){
+    return img.multiply(0.0001)  // scaling NDVI from 0-10000 to 0-1
+              .copyProperties(img, ['system:time_start']); // keep the date
+  });
+
+// Next, we get the Land Surface Temperature (LST) data
+// MOD11A2 is an 8-day LST product
+var allLST = ee.ImageCollection("MODIS/061/MOD11A2")
+  .select('LST_Day_1km')
+  .filterBounds(roi)
+  .map(function(img){
+    return img.multiply(0.02)  // scale according to MODIS documentation
+              .copyProperties(img, ['system:time_start']);
+  });
+
+// Now we need the minimum and maximum NDVI and LST over all years
+// This is because VCI and TCI are relative indices
+// VCI tells us how good the vegetation is compared to the worst and best NDVI ever
+// TCI tells us how stressed plants are compared to historical temperature extremes
+var ndviMin = allNDVI.min();  // worst NDVI
+var ndviMax = allNDVI.max();  // best NDVI
+var lstMin = allLST.min();    // coldest
+var lstMax = allLST.max();    // hottest
+
+// Function to calculate VCI for a given year
+// VCI = ((NDVI - NDVI_min) / (NDVI_max - NDVI_min)) * 100
+// We use median to reduce effects of clouds or weird values
+var makeVCI = function(year){
+  var start = ee.Date.fromYMD(year, 3, 1);
+  var end = ee.Date.fromYMD(year, 6, 30);  // growing season
+  var ndviYear = allNDVI.filterDate(start, end);
+
+  var vci = ndviYear.map(function(img){
+    return img.expression(
+      '((ndvi - min) / (max - min)) * 100', {
+        'ndvi': img,
+        'min': ndviMin,
+        'max': ndviMax
+      }).rename('VCI')
+        .copyProperties(img, ['system:time_start']);
+  });
+
+  var vciMedian = vci.median();
+  return vciMedian.set('year', year);
+};
+
+// Function to calculate TCI for a given year
+// TCI = ((LST_max - LST) / (LST_max - LST_min)) * 100
+// Higher temperatures usually stress plants, so we invert the formula
+var makeTCI = function(year){
+  var start = ee.Date.fromYMD(year, 3, 1);
+  var end = ee.Date.fromYMD(year, 6, 30);
+  var lstYear = allLST.filterDate(start, end);
+
+  var tci = lstYear.map(function(img){
+    return img.expression(
+      '((max - lst) / (max - min)) * 100', {
+        'lst': img,
+        'min': lstMin,
+        'max': lstMax
+      }).rename('TCI')
+        .copyProperties(img, ['system:time_start']);
+  });
+
+  var tciMedian = tci.median();
+  return tciMedian.set('year', year);
+};
+
+// We'll give equal weight to VCI and TCI for VHI
+var a = 0.5;  // 50% VCI, 50% TCI
+
+// Function to calculate VHI for a given year
+// VHI = a * VCI + (1-a) * TCI
+// We'll also classify stress into 5 levels
+var makeVHI = function(year){
+  var vciMedian = makeVCI(year);
+  var tciMedian = makeTCI(year);
+
+  var vhi = vciMedian.multiply(a).add(tciMedian.multiply(1-a)).rename('VHI');
+
+  // Classify vegetation stress/drought
+  var droughtClass = ee.Image(0)
+    .where(vhi.gte(0).and(vhi.lt(20)), 1)   // Extremely stressed
+    .where(vhi.gte(20).and(vhi.lt(40)), 2)  // Severe stress
+    .where(vhi.gte(40).and(vhi.lt(60)), 3)  // Moderate stress
+    .where(vhi.gte(60).and(vhi.lt(80)), 4)  // Light stress
+    .where(vhi.gte(80), 5)                  // Healthy
+    .clip(roi)
+    .rename('VHI');
+
+  // Print median VHI for the area so we can see numbers in the console
+  var stats = vhi.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  print('Year:', year, 'Median VHI:', stats.get('VHI'));
+
+  // Show the VHI map
+  Map.addLayer(droughtClass, {min:1, max:5, palette: palette}, 'VHI ' + year);
+
+  // Export VHI map to Google Drive
+  Export.image.toDrive({
+    image: droughtClass,
+    description: 'VHI_' + year,
+    folder: 'VHI_Maps',
+    region: roi,
+    scale: 1000,
+    crs: 'EPSG:4326',
+    maxPixels: 1e13
+  });
+
+  return droughtClass.set('year', year);
+};
+
+// Loop over all years to calculate and export VHI maps
+years.getInfo().forEach(function(year){
+  makeVHI(year);
+});
+
+// Function to make a table of yearly median VHI for the ROI
+var makeVHIStats = function(year){
+  var vciMedian = makeVCI(year);
+  var tciMedian = makeTCI(year);
+  var vhi = vciMedian.multiply(a).add(tciMedian.multiply(1-a));
+
+  var medianVHI = ee.Number(vhi.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 1000,
+    maxPixels: 1e13
+  }).get('VHI')).format('%.2f');
+
+  return ee.Dictionary({
+    'Year': year,
+    'Median_VHI': medianVHI
+  });
+};
+
+// Collect median VHI for all years
+var statsList = ee.List(years.map(makeVHIStats))
+  .map(function(d){return ee.Algorithms.If(d, d, null);})
+  .removeAll([null]);
+
+var statsFC = ee.FeatureCollection(statsList.map(function(d){
+  return ee.Feature(null, ee.Dictionary(d));
+}));
+
+// Export the table to Google Drive as CSV
+Export.table.toDrive({
+  collection: statsFC,
+  description: 'Historical_VHI_Table',
+  fileFormat: 'CSV'
+});
+
+// Done! Now we can:
+// - See the ROI and VHI maps for each year
+// - Check median VHI values in the console
+// - Export maps and a CSV table for further analysis
+
