@@ -1,0 +1,105 @@
+// Temperature Condition Index (TCI) Analysis
+
+//  visualize ROI
+Map.centerObject(roi);
+Map.addLayer(roi, {color: 'blue'}, 'ROI');
+
+// STEP 1: Define the Year Range
+// We will calculate TCI for each year from 2000 to 2023
+var years = ee.List.sequence(2000, 2024);
+
+// STEP 2: Load MODIS Land Surface Temperature (LST) Dataset
+// Dataset: MOD11A2 (8-day LST at 1 km resolution)
+// Band used: LST_Day_1km (daytime LST)
+// Scaling factor: 0.02 (to convert raw values to Kelvin)
+var lstCollection = ee.ImageCollection("MODIS/061/MOD11A2")
+  .select('LST_Day_1km')
+  .filterBounds(roi)
+  .map(function(img){
+    return img.multiply(0.02).copyProperties(img, ['system:time_start']);
+  });
+
+// Explanation:
+// The filterBounds ensures we only process images overlapping the ROI.
+
+// STEP 3: Compute Min and Max LST Over All Years
+// These will be used to standardize TCI
+var lstMin = lstCollection.min(); // coldest observed LST per pixel
+var lstMax = lstCollection.max(); // hottest observed LST per pixel
+
+// Explanation:
+// TCI is calculated relative to the historical extremes of temperature.
+// For each pixel: TCI = ((LST_max - LST) / (LST_max - LST_min)) * 100
+// Higher temperatures lower TCI (indicating stress on vegetation).
+
+// STEP 4: Calculate Yearly TCI
+// We define a function to compute TCI for a given year
+var makeTCI = function(year) {
+  year = ee.Number(year); // ensure server-side number
+  var start = ee.Date.fromYMD(year, 3, 1); // start of growing season
+  var end = ee.Date.fromYMD(year, 6, 30);  // end of growing season
+
+  // Filter LST images to the current year and growing season
+  var lstYear = lstCollection.filterDate(start, end);
+
+  // Compute median LST for the season to reduce cloud/noise effects
+  var lstMedian = lstYear.median();
+
+  // Calculate TCI: ((LST_max - LST) / (LST_max - LST_min)) * 100
+  var tci = lstMedian.expression(
+    '((max - lst) / (max - min)) * 100', {
+      'lst': lstMedian,
+      'max': lstMax,
+      'min': lstMin
+    }).rename('TCI');
+
+  // Reduce over the ROI to get a single mean value for the year
+  var stats = tci.reduceRegion({
+    reducer: ee.Reducer.mean(), // computes the average TCI over the ROI
+    geometry: roi,              // restrict to our study area
+    scale: 1000,                // match MODIS 1 km resolution
+    bestEffort: true            // allows GEE to adjust computations
+  });
+
+  // Return as a Feature to store year and TCI value
+  return ee.Feature(null, {
+    'year': year,
+    'TCI': stats.get('TCI')
+  });
+};
+
+// Map the makeTCI function over all years to produce a FeatureCollection
+var yearlyTCI = ee.FeatureCollection(years.map(makeTCI));
+
+// STEP 5: Print and Export the Table
+// This table contains yearly mean TCI for the ROI
+print('Yearly TCI (2000–2024)', yearlyTCI);
+
+Export.table.toDrive({
+  collection: yearlyTCI,
+  description: 'Yearly_TCI_2000_2024',
+  fileFormat: 'CSV'
+});
+
+// STEP 6: Create a Time Series Chart
+// Visualize TCI trends over time
+var tciChart = ui.Chart.feature.byFeature(yearlyTCI, 'year', ['TCI'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Temperature Condition Index (TCI) 2000–2024',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'TCI', minValue: 0, maxValue: 100 },
+    lineWidth: 2,
+    pointSize: 4,
+    colors: ['#ff7f0e'],   // orange line
+    legend: { position: 'none' }
+  });
+
+print(tciChart);
+
+// STEP 7: How to Interpret TCI / VHI Values (from literature)
+// 0–10    → Extreme drought / extreme temperature stress
+// 10–20   → Severe drought / severe temperature stress
+// 20–30   → Moderate drought / moderate stress
+// 30–40   → Mild drought / light stress
+// >40     → No drought / healthy vegetation
