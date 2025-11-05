@@ -103,12 +103,12 @@ var makeVHI = function(year){
   var vhi = vciMedian.multiply(a).add(tciMedian.multiply(1-a)).rename('VHI');
 
   // Classify vegetation stress/drought
-  var droughtClass = ee.Image(0)
-    .where(vhi.gte(0).and(vhi.lt(20)), 1)   // Extremely stressed
-    .where(vhi.gte(20).and(vhi.lt(40)), 2)  // Severe stress
-    .where(vhi.gte(40).and(vhi.lt(60)), 3)  // Moderate stress
-    .where(vhi.gte(60).and(vhi.lt(80)), 4)  // Light stress
-    .where(vhi.gte(80), 5)                  // Healthy
+var droughtClass = ee.Image(0)
+    .where(vciMedian.gte(0).and(vciMedian.lt(10)), 1)   // Extreme
+    .where(vciMedian.gte(10).and(vciMedian.lt(20)), 2)  // Severe
+    .where(vciMedian.gte(20).and(vciMedian.lt(30)), 3)  // Moderate
+    .where(vciMedian.gte(30).and(vciMedian.lt(40)), 4)  // Light
+    .where(vciMedian.gte(40), 5)                        // No drought
     .clip(roi)
     .rename('VHI');
 
