@@ -1,0 +1,158 @@
+
+// Now we are going to analyze drought using the SPEI Index
+// About the SPEI Dataset
+// Dataset used: "CSIC/SPEI/2_10" (latest version, supersedes 2_9)
+// Provided by: Spanish National Research Council (CSIC)
+// What is SPEI?
+// The Standardized Precipitation–Evapotranspiration Index (SPEI) measures drought  by considering both precipitation (rainfall) and potential evapotranspiration 
+// (water loss due to temperature). It is standardized, meaning values are comparable 
+// across space and time.
+
+// Time scales (rolling averages):
+//   SPEI_03_month → short-term (3-month) droughts, e.g., agricultural drought
+//   SPEI_06_month → medium-term (6-month) droughts, e.g., seasonal trends
+//   SPEI_12_month → long-term (12-month) droughts, e.g., hydrological drought
+//
+// Temporal Coverage: 1901–2023
+// Spatial Resolution: ~0.5° (~55 km)
+// Data Source: Global climate data (precipitation + temperature)
+//
+// Important Note on Low Spatial Resolution:
+
+// The coarse resolution (~55 km per pixel) means:
+//   1. Local-scale droughts (small watersheds, farms, cities) may not be captured.
+//   2. Values represent averaged conditions over large areas; fine-scale variability is smoothed.
+//   3. For site-specific applications, local meteorological data or higher-resolution datasets may be needed.
+//   4. Despite limitations, the dataset is excellent for regional or national drought monitoring,
+//      long-term trend analysis, and comparing short-, medium-, and long-term drought patterns.
+
+// Optional: visualize ROI
+Map.centerObject(roi);
+Map.addLayer(roi, {color: 'blue'}, 'ROI');
+
+// STEP 1: Define Year Range
+
+var years = ee.List.sequence(2000, 2023); // Analyze drought from 2000 to 2023
+
+// STEP 2: Load SPEI Dataset
+var speiCollection = ee.ImageCollection("CSIC/SPEI/2_10")
+  .select(['SPEI_03_month', 'SPEI_06_month', 'SPEI_12_month'])
+  .filterDate('2000-01-01', '2023-12-31')
+  .filterBounds(roi);
+
+// STEP 3: Calculate Yearly Mean SPEI Values
+var yearlySPEI = years.map(function(y) {
+  y = ee.Number(y);
+  var start = ee.Date.fromYMD(y, 1, 1);
+  var end   = ee.Date.fromYMD(y, 12, 31);
+  
+  // Filter SPEI data to the current year
+  var yearly = speiCollection.filterDate(start, end);
+  
+  // Compute mean image for the year
+ // This averages all images within the year, giving a single representative image
+  var meanImg = yearly.mean();
+
+  // Calculate mean SPEI over the ROI
+  // This averages pixel values inside the study area to give one number per timescale
+   // Parameters:
+  //reducer: ee.Reducer.mean() → calculates the average of all pixels
+  // geometry: roi → restricts the calculation to our region of interest
+  //scale: 55000 → matches the dataset resolution (~55 km)
+  // bestEffort: true → allows GEE to adjust computation for large areas
+  //stats is a dictionary with mean values for each timescale
+
+  var stats = meanImg.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 55000, // dataset resolution ~55 km
+    bestEffort: true
+  });
+  
+  // Return a Feature with year and SPEI values
+  return ee.Feature(null, {
+    'year': y,
+    'SPEI_03': ee.Number(stats.get('SPEI_03_month')),
+    'SPEI_06': ee.Number(stats.get('SPEI_06_month')),
+    'SPEI_12': ee.Number(stats.get('SPEI_12_month'))
+  });
+});
+
+yearlySPEI = ee.FeatureCollection(yearlySPEI);
+
+
+
+// STEP 4: Print and Export Table
+print("Yearly SPEI (3, 6, 12 months) 2000–2023", yearlySPEI);
+
+Export.table.toDrive({
+  collection: yearlySPEI,
+  description: 'Yearly_SPEI_3_6_12_2000_2023',
+  fileFormat: 'CSV'
+});
+
+
+
+// STEP 5: Create Separate Time Series Charts
+
+
+// SPEI-3 Chart (Short-term drought)
+var chart3 = ui.Chart.feature.byFeature(yearlySPEI, 'year', ['SPEI_03'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Mean SPEI-3 (2000–2023) — Short-term Drought',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'SPEI Value', minValue: -2, maxValue: 2 },
+    lineWidth: 2,
+    pointSize: 4,
+    colors: ['#1f77b4'],
+    legend: { position: 'none' }
+  });
+print(chart3);
+
+// SPEI-6 Chart (Medium-term drought)
+var chart6 = ui.Chart.feature.byFeature(yearlySPEI, 'year', ['SPEI_06'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Mean SPEI-6 (2000–2023) — Medium-term Drought',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'SPEI Value', minValue: -2, maxValue: 2 },
+    lineWidth: 2,
+    pointSize: 4,
+    colors: ['#2ca02c'],
+    legend: { position: 'none' }
+  });
+print(chart6);
+
+// SPEI-12 Chart (Long-term drought)
+var chart12 = ui.Chart.feature.byFeature(yearlySPEI, 'year', ['SPEI_12'])
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'Yearly Mean SPEI-12 (2000–2023) — Long-term Drought',
+    hAxis: { title: 'Year' },
+    vAxis: { title: 'SPEI Value', minValue: -2, maxValue: 2 },
+    lineWidth: 2,
+    pointSize: 4,
+    colors: ['#ff7f0e'],
+    legend: { position: 'none' }
+  });
+print(chart12);
+
+
+
+// STEP 6: How to Interpret SPEI Values
+
+// SPEI > +1      → Wet conditions (above normal)
+// -1 < SPEI < +1 → Near normal conditions
+// SPEI < -1      → Drought conditions
+//
+// SPEI-3 → short-term drought (fast response to rainfall)
+// SPEI-6 → medium-term drought (seasonal trends)
+// SPEI-12 → long-term drought (persistent, hydrological drought)
+
+
+//output
+
+// - 3 separate time-series charts for SPEI-3, SPEI-6, SPEI-12
+// - CSV table exported for further analysis
+
