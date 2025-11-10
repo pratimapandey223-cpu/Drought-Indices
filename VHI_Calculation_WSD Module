@@ -104,15 +104,14 @@ var makeVHI = function(year){
 
   // Classify vegetation stress/drought
 var droughtClass = ee.Image(0)
-    .where(vciMedian.gte(0).and(vciMedian.lt(10)), 1)   // Extreme
-    .where(vciMedian.gte(10).and(vciMedian.lt(20)), 2)  // Severe
-    .where(vciMedian.gte(20).and(vciMedian.lt(30)), 3)  // Moderate
-    .where(vciMedian.gte(30).and(vciMedian.lt(40)), 4)  // Light
-    .where(vciMedian.gte(40), 5)                        // No drought
-    .clip(roi)
-    .rename('VHI');
+  .where(vhi.gte(0).and(vhi.lt(10)), 1) //0-10,extreme drought
+  .where(vhi.gte(10).and(vhi.lt(20)), 2) //10-20,severe drought
+  .where(vhi.gte(20).and(vhi.lt(30)), 3) //20-30, moderate drougt
+  .where(vhi.gte(30).and(vhi.lt(40)), 4) //30-40, light drought
+  .where(vhi.gte(40), 5) //>40, no drought
+  .clip(roi)
+  .rename('VHI');
 
-  // Print median VHI for the area so we can see numbers in the console
   var stats = vhi.reduceRegion({
     reducer: ee.Reducer.mean(),
     geometry: roi,
@@ -121,10 +120,8 @@ var droughtClass = ee.Image(0)
   });
   print('Year:', year, 'Median VHI:', stats.get('VHI'));
 
-  // Show the VHI map
   Map.addLayer(droughtClass, {min:1, max:5, palette: palette}, 'VHI ' + year);
 
-  // Export VHI map to Google Drive
   Export.image.toDrive({
     image: droughtClass,
     description: 'VHI_' + year,
@@ -138,16 +135,16 @@ var droughtClass = ee.Image(0)
   return droughtClass.set('year', year);
 };
 
-// Loop over all years to calculate and export VHI maps
+// Loop for all years
 years.getInfo().forEach(function(year){
   makeVHI(year);
 });
 
-// Function to make a table of yearly median VHI for the ROI
+// Median VHI table
 var makeVHIStats = function(year){
   var vciMedian = makeVCI(year);
   var tciMedian = makeTCI(year);
-  var vhi = vciMedian.multiply(a).add(tciMedian.multiply(1-a));
+  var vhi = vciMedian.multiply(a).add(tciMedian.multiply(1-a)).rename('VHI');
 
   var medianVHI = ee.Number(vhi.reduceRegion({
     reducer: ee.Reducer.mean(),
@@ -162,16 +159,12 @@ var makeVHIStats = function(year){
   });
 };
 
-// Collect median VHI for all years
-var statsList = ee.List(years.map(makeVHIStats))
-  .map(function(d){return ee.Algorithms.If(d, d, null);})
-  .removeAll([null]);
+var statsList = ee.List(years.map(makeVHIStats)).removeAll([null]);
 
 var statsFC = ee.FeatureCollection(statsList.map(function(d){
   return ee.Feature(null, ee.Dictionary(d));
 }));
 
-// Export the table to Google Drive as CSV
 Export.table.toDrive({
   collection: statsFC,
   description: 'Historical_VHI_Table',
